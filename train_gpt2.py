@@ -30,7 +30,7 @@ class CausalSelfAttention(nn.Module):
         self.register_buffer("bias", torch.tril(torch.ones(config.block_size, config.block_size))
                              .view(1, 1, config.block_size, config.block_size))
     
-    def forward(self, x):
+    def forward(self, x: torch.Tensor):
         B, T, C = x.size() # batch size, sequence length, embedding dimensionality (n_embd)
         # calculate query, key, value for all heads in batch and move head forward to be the batch
         # nh is "number of heads", hs is "head size", and C (number of channels) = nh * hs
@@ -40,11 +40,18 @@ class CausalSelfAttention(nn.Module):
         k = k.view(B, T, self.n_head, C // self.n_head).transpose(1, 2) # (B, nh, T, hs)
         q = q.view(B, T, self.n_head, C // self.n_head).transpose(1, 2) 
         v = v.view(B, T, self.n_head, C // self.n_head).transpose(1, 2)
+    
         # attention {materializes the large (T,T) matrix for all the queries and keys}
-        att = (q @ k.transpose(-2, -1)) * (1.0 / math.sqrt(k.size(-1)))
-        att = att.masked_fill(self.bias[:,:,:T,:T] == 0, float('-inf'))
-        att = F.softmax(att, dim=-1)
-        y = att @ v # (B, nh, T, T) x (B, nh, T, hs) -> (B, nh, T, hs)
+        # manual attention
+        # att = (q @ k.transpose(-2, -1)) * (1.0 / math.sqrt(k.size(-1)))
+        # att = att.masked_fill(self.bias[:,:,:T,:T] == 0, float('-inf'))
+        # att = F.softmax(att, dim=-1)
+        # y = att @ v # (B, nh, T, T) x (B, nh, T, hs) -> (B, nh, T, hs)
+
+        # pytorch's optimized attention with casual mask
+        # this uses flash attention when available
+        y = F.scaled_dot_product_attention(q, k, v, is_causal=True)
+        
         y = y.transpose(1, 2).contiguous().view(B, T, C) # re-assemble all head outputs side by side
         # output projection
         y = self.c_proj(y)
@@ -59,7 +66,7 @@ class MLP(nn.Module):
         self.gelu = nn.GELU(approximate='tanh')
         self.c_proj = nn.Linear(4 * config.n_embd, config.n_embd)
     
-    def forward(self, x):
+    def forward(self, x:torch.Tensor):
         x = self.c_fc(x)
         x = self.gelu(x)
         x = self.c_proj(x)
@@ -74,7 +81,7 @@ class Block(nn.Module):
         self.ln_2 = nn.LayerNorm(config.n_embd)
         self.mlp = MLP(config)
     
-    def forward(self, x):
+    def forward(self, x: torch.Tensor):
         x = x + self.attn(self.ln_1(x))
         x = x + self.mlp(self.ln_2(x))
         return x
@@ -93,7 +100,7 @@ class GPT(nn.Module):
         ))
         self.lm_head = nn.Linear(config.n_embd, config.vocab_size, bias=False)
 
-    def forward(self, idx):
+    def forward(self, idx: torch.Tensor):
         # idx is of shape (B, T)
         B, T = idx.size()
         assert T <= self.config.block_size, f"Cannot forward sequence of length {T}, block size is only {self.config.block_size} "
@@ -111,11 +118,11 @@ class GPT(nn.Module):
         return logits
 
     @classmethod
-    def from_pretrained(cls, model_type):
+    def from_pretrained(cls, model_type: str):
         """Loads pretrained GPT-2 model weights from huggingface"""
         assert model_type in {'gpt2', 'gpt2-medium', 'gpt2-large', 'gpt2-xl'}
         from transformers import GPT2LMHeadModel
-        print("loading weights from pretrained gpt: %s" % model_type)
+        print("loading weights from pretrained gpt: %\n" % model_type)
 
         # n_layer, n_head and n_embd are determined from model_type
         config_args = {
@@ -166,13 +173,28 @@ if torch.cuda.is_available():
     device = 'cuda'
 print(f"Using device: {device}")
 
+# Check SDP backends
+if torch.cuda.is_available():
+    print("\n=== Scaled Dot Product Attention Backends ===")
+    print(f"Flash Attention available: {torch.backends.cuda.flash_sdp_enabled()}")
+    print(f"Memory Efficient Attention available: {torch.backends.cuda.mem_efficient_sdp_enabled()}")
+    print(f"Math Attention available: {torch.backends.cuda.math_sdp_enabled()}")
+    
+    # Show which backend will be used
+    from torch.nn.attention import sdpa_kernel, SDPBackend
+    with sdpa_kernel(SDPBackend.FLASH_ATTENTION):
+        print(f"\nCurrently enabled backends:")
+        print(f"  Flash: {torch.backends.cuda.flash_sdp_enabled()}")
+        print(f"  Memory Efficient: {torch.backends.cuda.mem_efficient_sdp_enabled()}")
+        print(f"  Math: {torch.backends.cuda.math_sdp_enabled()}\n")
+
 num_return_sequences = 5
 max_length = 30
 
 # model = GPT.from_pretrained('gpt2')
 model = GPT(GPTConfig()) # random model initialization
 model.eval()
-model.to('cuda')
+model.to(device)
 
 # prefix tokens
 import tiktoken
@@ -180,12 +202,13 @@ enc = tiktoken.get_encoding('gpt2')
 tokens = enc.encode("Hello, I'm a language model,")
 tokens = torch.tensor(tokens, dtype=torch.long) # (8,)
 tokens = tokens.unsqueeze(0).repeat(num_return_sequences, 1) # (5, 8)
-x = tokens.to('cuda')
+x = tokens.to(device)
 
 # generate right now x is (B, T) where B = 5, T = 8
 # set the seed to 42
-torch.manual_seed(42)
-torch.cuda.manual_seed(42)
+torch.manual_seed(2)
+if torch.cuda.is_available():
+    torch.cuda.manual_seed(2)
 while x.size(1) < max_length:  # 8 < 30
     # forward the model to get the logits 
     with torch.no_grad():
