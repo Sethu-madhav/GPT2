@@ -3,6 +3,7 @@ import math
 import torch
 import torch.nn as nn
 from torch.nn import functional as F
+import torch.nn.intrinsic
 
 # ------------------------------------
 
@@ -99,6 +100,20 @@ class GPT(nn.Module):
             ln_f = nn.LayerNorm(config.n_embd),
         ))
         self.lm_head = nn.Linear(config.n_embd, config.vocab_size, bias=False)
+
+        # weight tying scheme
+        self.transformer.wte.weight = self.lm_head.weight
+
+        # init params
+        self.apply(self.__init__weights)
+    
+    def __init_weights(self, module):
+        if isinstance(module, nn.Linear):
+            torch.nn.init.normal_(module.weight, mean=0.0, std=0.02)
+            if module.bias is not None:
+                torch.nn.init.zeros_(module.bias)
+        elif isinstance(module, nn.Embedding):
+            torch.nn.init.normal_(module.weight, mean=0.0, std=0.02)
 
     def forward(self, idx: torch.Tensor, targets: torch.Tensor = None):
         # idx is of shape (B, T)
