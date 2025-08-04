@@ -2,8 +2,9 @@ from dataclasses import dataclass
 import math
 import torch
 import torch.nn as nn
+import matplotlib.pyplot as plt
 from torch.nn import functional as F
-import torch.nn.intrinsic
+from torch.utils.tensorboard import SummaryWriter
 
 # ------------------------------------
 
@@ -24,6 +25,7 @@ class CausalSelfAttention(nn.Module):
         self.c_attn = nn.Linear(config.n_embd, 3 * config.n_embd)
         # output projection
         self.c_proj = nn.Linear(config.n_embd, config.n_embd)
+        self.c_proj.NANOGPT_SCALE_INIT = 1
         # regularization
         self.n_head = config.n_head
         self.n_embd = config.n_embd
@@ -44,14 +46,10 @@ class CausalSelfAttention(nn.Module):
     
         # attention {materializes the large (T,T) matrix for all the queries and keys}
         # manual attention
-        # att = (q @ k.transpose(-2, -1)) * (1.0 / math.sqrt(k.size(-1)))
-        # att = att.masked_fill(self.bias[:,:,:T,:T] == 0, float('-inf'))
-        # att = F.softmax(att, dim=-1)
-        # y = att @ v # (B, nh, T, T) x (B, nh, T, hs) -> (B, nh, T, hs)
-
-        # pytorch's optimized attention with casual mask
-        # this uses flash attention when available
-        y = F.scaled_dot_product_attention(q, k, v, is_causal=True)
+        att = (q @ k.transpose(-2, -1)) * (1.0 / math.sqrt(k.size(-1)))
+        att = att.masked_fill(self.bias[:,:,:T,:T] == 0, float('-inf'))
+        att = F.softmax(att, dim=-1)
+        y = att @ v # (B, nh, T, T) x (B, nh, T, hs) -> (B, nh, T, hs)
         
         y = y.transpose(1, 2).contiguous().view(B, T, C) # re-assemble all head outputs side by side
         # output projection
@@ -66,6 +64,7 @@ class MLP(nn.Module):
         self.c_fc = nn.Linear(config.n_embd, 4 * config.n_embd)
         self.gelu = nn.GELU(approximate='tanh')
         self.c_proj = nn.Linear(4 * config.n_embd, config.n_embd)
+        self.c_proj.NANOGPT_SCALE_INIT = 1
     
     def forward(self, x:torch.Tensor):
         x = self.c_fc(x)
@@ -107,9 +106,16 @@ class GPT(nn.Module):
         # init params
         self.apply(self.__init__weights)
     
-    def __init_weights(self, module):
+    def __init__weights(self, module):
         if isinstance(module, nn.Linear):
-            torch.nn.init.normal_(module.weight, mean=0.0, std=0.02)
+            std=0.02
+            # scaled down the standard deviation to be at 1.0 
+            # (init * 1/sqrt(No.of residual layers))
+            # here we use residual connection 2 times, one for attn and one for mlp
+            # hence 2 * self.config.n_layer 
+            if hasattr(module, 'NANOGPT_SCALE_INIT'):
+                std *= (2 * self.config.n_layer) ** -0.5    
+            torch.nn.init.normal_(module.weight, mean=0.0, std=std)
             if module.bias is not None:
                 torch.nn.init.zeros_(module.bias)
         elif isinstance(module, nn.Embedding):
@@ -222,32 +228,20 @@ if torch.cuda.is_available():
     device = 'cuda'
 print(f"Using device: {device}")
 
-# Check SDP backends
-if torch.cuda.is_available():
-    print("\n=== Scaled Dot Product Attention Backends ===")
-    print(f"Flash Attention available: {torch.backends.cuda.flash_sdp_enabled()}")
-    print(f"Memory Efficient Attention available: {torch.backends.cuda.mem_efficient_sdp_enabled()}")
-    print(f"Math Attention available: {torch.backends.cuda.math_sdp_enabled()}")
-    
-    # Show which backend will be used
-    from torch.nn.attention import sdpa_kernel, SDPBackend
-    with sdpa_kernel(SDPBackend.FLASH_ATTENTION):
-        print(f"\nCurrently enabled backends:")
-        print(f"  Flash: {torch.backends.cuda.flash_sdp_enabled()}")
-        print(f"  Memory Efficient: {torch.backends.cuda.mem_efficient_sdp_enabled()}")
-        print(f"  Math: {torch.backends.cuda.math_sdp_enabled()}\n")
-
 train_loader = DataLoaderLite(B=4, T=32)
+torch.manual_seed(1337)
+if torch.cuda.is_available():
+    torch.cuda.manual_seed(1337)
 
 # model = GPT.from_pretrained('gpt2')
 # get logits
 model = GPT(GPTConfig()) # random model initialization
 model.to(device)
 # logits, loss = model(x, y)
-
+writer = SummaryWriter()
 # optimization
 optimizer = torch.optim.AdamW(model.parameters(), lr=3e-4)
-for i in range(50):
+for i in range(2640):
     # get data 
     x, y = train_loader.next_batch()
     x, y = x.to(device), y.to(device)
@@ -260,6 +254,12 @@ for i in range(50):
     # 4. update params
     optimizer.step()
     print(f"step {i}, loss: {loss.item()}")
+
+    # Log to TensorBoard
+    writer.add_scalar('Loss/Train', loss.item(), i)
+
+# close writer 
+writer.close()
 
 import sys; sys.exit(0)
 

@@ -3,3 +3,4 @@ huggingface
 transformers
 tiktoken
 matplotlib
+tensorboard
