@@ -4,3 +4,4 @@ transformers
 tiktoken
 matplotlib
 tensorboard
+triton

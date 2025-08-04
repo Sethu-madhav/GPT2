@@ -230,7 +230,7 @@ if torch.cuda.is_available():
     device = 'cuda'
 print(f"Using device: {device}")
 
-train_loader = DataLoaderLite(B=4, T=1024)
+train_loader = DataLoaderLite(B=16, T=1024)
 # enable tf32
 torch.set_float32_matmul_precision('high')
 
@@ -243,13 +243,8 @@ if torch.cuda.is_available():
 model = GPT(GPTConfig()) # random model initialization
 model.to(device)
 # use torch.compile
-'''
-try:
-    model = torch.compile(model)
-    print("Model compiled successfully")
-except Exception as e:
-    print(f"torch.compile failed: {e}")
-'''
+model = torch.compile(model)
+
 # logits, loss = model(x, y)
 writer = SummaryWriter()
 # optimization
