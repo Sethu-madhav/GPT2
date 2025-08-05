@@ -46,10 +46,13 @@ class CausalSelfAttention(nn.Module):
     
         # attention {materializes the large (T,T) matrix for all the queries and keys}
         # manual attention
-        att = (q @ k.transpose(-2, -1)) * (1.0 / math.sqrt(k.size(-1)))
-        att = att.masked_fill(self.bias[:,:,:T,:T] == 0, float('-inf'))
-        att = F.softmax(att, dim=-1)
-        y = att @ v # (B, nh, T, T) x (B, nh, T, hs) -> (B, nh, T, hs)
+        # att = (q @ k.transpose(-2, -1)) * (1.0 / math.sqrt(k.size(-1)))
+        # att = att.masked_fill(self.bias[:,:,:T,:T] == 0, float('-inf'))
+        # att = F.softmax(att, dim=-1)
+        # y = att @ v # (B, nh, T, T) x (B, nh, T, hs) -> (B, nh, T, hs)
+
+        # Flash attention
+        y = F.scaled_dot_product_attention(q, k, v, is_causal=True)
         
         y = y.transpose(1, 2).contiguous().view(B, T, C) # re-assemble all head outputs side by side
         # output projection
@@ -241,7 +244,7 @@ if torch.cuda.is_available():
 
 # model = GPT.from_pretrained('gpt2')
 # get logits
-model = GPT(GPTConfig()) # random model initialization
+model = GPT(GPTConfig(vocab_size=50304)) # random model initialization
 model.to(device)
 
 # use torch.compile
