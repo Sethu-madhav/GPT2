@@ -223,6 +223,7 @@ class DataLoaderLite:
 
 # ----------------------------------
 import time
+import platform
 
 # device assign
 device = 'cpu'
@@ -242,8 +243,13 @@ if torch.cuda.is_available():
 # get logits
 model = GPT(GPTConfig()) # random model initialization
 model.to(device)
+
 # use torch.compile
-model = torch.compile(model)
+# if windows use "eager", since triton is not supported
+if platform.system() == "Windows":
+    model = torch.compile(model, backend="eager")
+else:
+    model = torch.compile(model) # uses triton
 
 # logits, loss = model(x, y)
 writer = SummaryWriter()
