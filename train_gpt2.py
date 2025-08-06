@@ -249,14 +249,35 @@ class DataLoaderLite:
         return x, y
 
 # ----------------------------------
+import os
 import time
 import platform
+from torch.distributed import init_process_group, destroy_process_group
 
-# device assign
-device = 'cpu'
-if torch.cuda.is_available():
-    device = 'cuda'
-print(f"Using device: {device}")
+# set up DDP (distributed data parallel)
+# torchrun command sets the env variable RANK, LOCAL_RANK, and WORLD_SIZE
+ddp = int(os.environ.get('RANK', -1)) != -1 # is this a ddp run?
+if ddp:
+    # use of DDP atm demands CUDA, we set the device appropriately according to rank
+    assert torch.cuda.is_available(), "we need CUDA for DDP"
+    init_process_group(backend='nccl')
+    ddp_rank = int(os.environ['RANK']) # gpu rank in the node
+    ddp_local_rank = int(os.environ['LOCAL_RANK']) # node rank in multiple nodes
+    ddp_world_size = int(os.environ['WORLD_SIZE']) # No.of gpus
+    device = f'cuda:{ddp_local_rank}'
+    torch.cuda.set_device(device)
+    master_process = ddp_rank == 0 # this process will do logging, checkpointing etc.
+else:
+    # vanilla, non-DDP run
+    ddp_rank = 0
+    ddp_local_rank = 0
+    ddp_world_size = 1
+    master_process = True
+    # device assign
+    device = 'cpu'
+    if torch.cuda.is_available():
+        device = 'cuda'
+    print(f"Using device: {device}")
 
 torch.manual_seed(1337)
 if torch.cuda.is_available():
@@ -266,11 +287,14 @@ if torch.cuda.is_available():
 total_batch_size = 524288 # 2**19 ≈0.5M, in number of tokens
 B = 16 # micro batch size
 T = 1024 # sequence length
-assert total_batch_size % (B * T) == 0, "make sure total batch size is divisible by B * T"
-grad_accum_steps = total_batch_size // (B * T) # 05M/(16 * 1024) ≈32 times grad accum happens and then update params
-print(f"total desired batch size: {total_batch_size}")
-print(f"=> calculated gradient accumulation steps: {grad_accum_steps}")
+assert total_batch_size % (B * T * ddp_world_size) == 0, "make sure total batch size is divisible by B * T * ddp_world_size"
+grad_accum_steps = total_batch_size // (B * T * ddp_world_size) # 0.5M/(16 * 1024 * 8) ≈4 times grad accum happens and then update params
+if master_process:
+    print(f"total desired batch size: {total_batch_size}")  
+    print(f"=> calculated gradient accumulation steps: {grad_accum_steps}")
 
+print(f"I am GPU: {ddp_rank}")
+import sys; sys.exit(0)
 train_loader = DataLoaderLite(B=B, T=T)
 
 # enable tf32
