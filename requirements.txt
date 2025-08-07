@@ -5,3 +5,4 @@ tiktoken
 matplotlib
 tensorboard
 triton
+datasets
