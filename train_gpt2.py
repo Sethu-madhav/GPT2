@@ -220,9 +220,12 @@ class GPT(nn.Module):
 import tiktoken
 
 class DataLoaderLite:
-    def __init__(self, B, T):
+    def __init__(self, B, T, process_rank, num_processes):
         self.B = B
         self.T = T
+        self.process_rank = process_rank
+        self.num_processes = num_processes
+
 
         # at init load tokens from disk and store them in memory
         with open('input.txt', 'r') as f:
@@ -234,7 +237,7 @@ class DataLoaderLite:
         print(f"1 epoch = {len(self.tokens) // (B * T)} batches")
 
         # state
-        self.current_position = 0
+        self.current_position = self.b * self.T * self.process_rank
 
     def next_batch(self):
         B, T = self.B, self.T
@@ -242,18 +245,19 @@ class DataLoaderLite:
         x = (buf[:-1]).view(B, T) # inputs
         y = (buf[1:]).view(B, T)  # targets
         # advance the position in the tensor
-        self.current_position += B * T
+        self.current_position += B * T * self.num_processes
         # if loading the next batch would be out of bounds, reset
-        if self.current_position + (B*T + 1) > len(self.tokens):
-            self.current_position = 0
+        if self.current_position + (B*T*self.process_rank + 1) > len(self.tokens):
+            self.current_position = self.b * self.T * self.process_rank
         return x, y
 
 # ----------------------------------
 import os
 import time
 import platform
+import torch.distributed as dist
 from torch.distributed import init_process_group, destroy_process_group
-
+from torch.nn.parallel import DistributedDataParallel as DDP
 # set up DDP (distributed data parallel)
 # torchrun command sets the env variable RANK, LOCAL_RANK, and WORLD_SIZE
 ddp = int(os.environ.get('RANK', -1)) != -1 # is this a ddp run?
@@ -293,15 +297,13 @@ if master_process:
     print(f"total desired batch size: {total_batch_size}")  
     print(f"=> calculated gradient accumulation steps: {grad_accum_steps}")
 
-print(f"I am GPU: {ddp_rank}")
-import sys; sys.exit(0)
-train_loader = DataLoaderLite(B=B, T=T)
+train_loader = DataLoaderLite(B=B, T=T, process_rank=ddp_rank, num_processes=ddp_world_size)
 
 # enable tf32
 torch.set_float32_matmul_precision('high')
 
 # model = GPT.from_pretrained('gpt2')
-# get logits
+# create model
 model = GPT(GPTConfig(vocab_size=50304)) # random model initialization
 model.to(device)
 
@@ -311,6 +313,9 @@ if platform.system() == "Windows":
     model = torch.compile(model, backend="eager")
 else:
     model = torch.compile(model) # uses triton
+if ddp:
+    model = DDP(model, device_ids=[ddp_local_rank])
+raw_model = model.module if ddp else model # always contains the raw unwrapped model
 
 max_lr = 6e-4
 min_lr = max_lr * 0.1
@@ -331,7 +336,7 @@ def get_lr(it):
 
 # optimization
 # optimizer = torch.optim.AdamW(model.parameters(), lr=3e-4, betas=(0.9, 0.95), eps=1e-8)
-optimizer = model.configure_optimizers(weight_decay=0.1, learning_rate=6e-4, device=device)
+optimizer = raw_model.configure_optimizers(weight_decay=0.1, learning_rate=6e-4, device=device)
 
 # for tensorboard 
 writer = SummaryWriter()
@@ -355,8 +360,12 @@ for step in range(max_steps):
         # instead of a SUM we want MEAN. scale the loss here so it comes out 
         loss = loss / grad_accum_steps # recover normalizer
         loss_accum += loss.detach()
+        if ddp:
+            model.require_backward_grad_sync = (micro_step == grad_accum_steps - 1)
         # 3. loss backward
         loss.backward()
+    if ddp:
+        dist.all_reduce(loss_accum, op=dist.ReduceOp.AVG)
     # gradient clipping 
     # to prevent model from shock if there is a big change in gradient magnitude
     norm = torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0) 
@@ -369,12 +378,16 @@ for step in range(max_steps):
     torch.cuda.synchronize()
     t1 = time.time()
     dt = (t1 - t0) # time difference in seconds
-    tokens_processed = train_loader.B * train_loader.T * grad_accum_steps
+    tokens_processed = train_loader.B * train_loader.T * grad_accum_steps * ddp_world_size
     token_per_sec = tokens_processed / dt
-    print(f"step {step:<4}| loss: {loss_accum.item():<6.3f} | lr: {lr:<8.4e} | norm: {norm:<10.4f} | dt: {dt:<8.2f}secs | tok/sec: {token_per_sec:<8.2f}")
+    if master_process:
+        print(f"step {step:<4}| loss: {loss_accum.item():<6.3f} | lr: {lr:<8.4e} | norm: {norm:<10.4f} | dt: {dt:<8.2f}secs | tok/sec: {token_per_sec:<8.2f}")
 
     # Log to TensorBoard
     writer.add_scalar('Loss/Train', loss.item(), step)
+
+if ddp:
+    destroy_process_group()
 
 # close writer 
 writer.close()
