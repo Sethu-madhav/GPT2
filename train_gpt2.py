@@ -2,7 +2,6 @@ import torch, tiktoken
 import math, os, inspect, time, platform 
 import numpy as np
 import torch.nn as nn
-import matplotlib.pyplot as plt 
 from dataclasses import dataclass
 from torch.nn import functional as F
 from torch.utils.tensorboard import SummaryWriter
@@ -13,7 +12,7 @@ from hellaswag import render_example, iterate_examples
 @dataclass
 class GPTConfig:
     block_size: int = 1024  # max sequence length
-    vocab_size: int = 50257 # number of tokens: 50,000 BPE merges + 256 bytes tokens + 1 <|endofturn|>  
+    vocab_size: int = 50304 # number of tokens: 50,000 BPE merges + 256 bytes tokens + 1 <|endofturn|>  
     n_layer: int = 12       # number of transformer blocks 
     n_head: int = 12        # number of heads inside a block 
     n_embd: int = 768       # embedding dimension      
@@ -151,7 +150,7 @@ class GPT(nn.Module):
         """Loads pretrained GPT-2 model weights from huggingface"""
         assert model_type in {'gpt2', 'gpt2-medium', 'gpt2-large', 'gpt2-xl'}
         from transformers import GPT2LMHeadModel
-        print("loading weights from pretrained gpt: %\n" % model_type)
+        print("loading weights from pretrained gpt: %s\n" % model_type)
 
         # n_layer, n_head and n_embd are determined from model_type
         config_args = {
@@ -160,7 +159,7 @@ class GPT(nn.Module):
             'gpt2-large':  dict(n_layer=36, n_head=20, n_embd=1280), # 774M params
             'gpt2-xl':     dict(n_layer=48, n_head=25, n_embd=1600), # 1558M params
         }[model_type]
-        config_args['vocab_size'] = 50257 # always 50257 for all GPT model checkpoints
+        config_args['vocab_size'] = 50304 # always 50304 for all GPT model checkpoints
         config_args['block_size'] = 1024  # always 1024 for all GPT model checkpoints
         # create a from scratch intialized miniGPT model
         config = GPTConfig(**config_args)
@@ -264,7 +263,7 @@ class DataLoaderLite:
     def reset(self):
         # state, init at shard zero
         self.current_shard = 0
-        self.tokens = load_tokens(self.shards(self.current_shard))
+        self.tokens = load_tokens(self.shards[self.current_shard])
         self.current_position = self.B * self.T * self.process_rank
 
     def next_batch(self):
@@ -400,8 +399,10 @@ def get_lr(it):
 optimizer = raw_model.configure_optimizers(weight_decay=0.1, learning_rate=6e-4, device=device)
 enc = tiktoken.get_encoding('gpt2')
 # for tensorboard 
-writer = SummaryWriter()
-
+if master_process:
+    writer = SummaryWriter()
+else:
+    writer = None
 # create the log directory we will write checkpoints to and log to
 log_dir = "log"
 os.makedirs(log_dir, exist_ok=True)
@@ -434,7 +435,7 @@ for step in range(max_steps):
     
     # for 250 steps evaluate hellaswag
     if (step % 250 == 0 or last_step) and (not use_compile):
-        num_correct_sum = 0
+        num_correct_norm = 0
         num_total = 0
         for i, example in enumerate(iterate_examples('val')):
             # only process examples where i % ddp_world_size == ddp_rank
@@ -485,7 +486,7 @@ for step in range(max_steps):
                     # 1. forward
                     logits, loss = model(xgen) # (B, T, vocab_size)
                 # take the logits at last position 
-                logits = logits[:, -1, :] # (B, vocab_size) - (5, 50257)
+                logits = logits[:, -1, :] # (B, vocab_size) - (5, 50304)
                 # get the probabilites
                 probs = F.softmax(logits, dim=-1)
                 # do top-k smapling of 50 (hf pipeline default)
@@ -496,11 +497,11 @@ for step in range(max_steps):
                 # gather the corresponding indices
                 xcol = torch.gather(topk_indices, -1, ix) # (B, 1) - (5, 1)
                 # append to the sequence 
-                x = torch.cat((x, xcol), dim=1)
+                xgen = torch.cat((xgen, xcol), dim=1)
 
         # print the generated text
         for i in range(num_return_sequences):
-            tokens = x[i, :max_length].tolist()
+            tokens = xgen[i, :max_length].tolist()
             decoded = enc.decode(tokens)
             print(f"rank {ddp_rank} sample {i}: {decoded}")
 
@@ -548,10 +549,12 @@ for step in range(max_steps):
         with open(log_file, 'a') as f:
             f.write(f"{step} train {loss_accum.item():.6f}\n")
     # Log to TensorBoard
-    writer.add_scalar('Loss/Train', loss.item(), step)
+    if master_process:
+        writer.add_scalar('Loss/Train', loss_accum.item(), step)
 
 if ddp:
     destroy_process_group()
 
 # close writer 
-writer.close()
+if writer is not None:
+    writer.close()  
