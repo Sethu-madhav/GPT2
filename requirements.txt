@@ -1,5 +1,6 @@
 torch
-huggingface
+tqdm
+huggingface_hub
 transformers
 tiktoken
 matplotlib
