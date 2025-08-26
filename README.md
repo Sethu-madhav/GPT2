@@ -1,73 +1,62 @@
-# Building a GPT-style Language Model from Scratch
+# Pre-training a GPT Style Language Model from Scratch 
 
-This repository contains the code and notebooks for building and training a GPT-style language model from the ground up, following the educational series by Andrej Karpathy. The project explores the fundamental components of the transformer architecture, starting with a simple Bigram model and progressing to a full GPT implementation.
+This repository contains a comprehensive framework for pre-training a GPT style language model from the ground up in PyTorch. The project originated as an implementation of Andrej Karpathy's NanoGPT project and has since been significantly extended to support large-scale dataset processing, formal model evaluation, and modern development tools.
 
-## About This Project
+The framework is capable of processing the **FineWeb** dataset, training a model in a distributed fashion using FSDP, and evaluating its performance on the **HellaSwag** commonsense reasoning benchmark.
 
-The primary goal of this project is to gain a deep, hands-on understanding of the architecture that powers modern Large Language Models (LLMs). By implementing each component step-by-step in PyTorch, from the simplest baseline to a complete transformer model, this project serves as a practical learning exercise.
+***
 
-The code is heavily inspired by and based on Andrej Karpathy's "Let's build GPT: from scratch, in code, spelled out." video tutorial.
+## Key Features
+
+* **Large-Scale Data Processing**: Includes scripts to download and stream the massive FineWeb dataset efficiently.
+* **Pre-Tokenization**: A dedicated script to tokenize the dataset ahead of time, accelerating the training pipeline.
+* **Integrated Evaluation**: The training loop incorporates validation on the HellaSwag benchmark to track model performance on a downstream task.
+* **Distributed Training**: Built with support for PyTorch FSDP to train on multi-GPU systems (e.g., 2x NVIDIA 5090s).
+* **Modern Tooling**: Uses `uv` and `pyproject.toml` for fast and reliable dependency management.
+
+***
 
 ## Getting Started
 
-To run the notebooks and scripts in this repository, follow these steps.
+Follow these steps to set up the environment, prepare the data, and run the training.
 
-### Prerequisites
+### 1. Installation
 
-- Python 3.7+
-- Jupyter Notebook or JupyterLab
+This project uses `uv` for environment and dependency management.
 
-### Installation
+```bash
+# Clone the repository
+git clone [https://github.com/](https://github.com/)[your-username]/[your-repo-name].git
+cd [your-repo-name]
 
-1.  **Clone the repository:**
-    ```bash
-    git clone [https://github.com/Sethu-madhav/GPT2.git](https://github.com/Sethu-madhav/GPT2.git)
-    cd GPT2
-    ```
+# Create a virtual environment and install dependencies with uv
+uv venv
+source .venv/bin/activate  # On Windows, use `.venv\Scripts\activate`
+uv pip install -r requirements.txt
+```
+### 2. Data Preparation (FineWeb)
+Training is performed on a pre-tokenized version of the FineWeb dataset.
 
-2.  **Create a virtual environment (recommended):**
-    ```bash
-    python -m venv venv
-    source venv/bin/activate  # On Windows, use `venv\Scripts\activate`
-    ```
+Step A: Download the raw data
+The `fineweb.py` script downloads and shards the dataset into smaller files.
 
-3.  **Install the required dependencies:**
-    The `requirements.txt` file contains all the necessary libraries.
-    ```bash
-    pip install -r requirements.txt
-    ```
+```bash
+python fineweb.py
+```
 
-## Project Structure and Content
+### 3. Training the Model
+The `train_gpt2.py` script is the main entry point for training. To launch a distributed training job using FSDP on 2 GPUs, use `torchrun`:
+```bash
+# Launch training on 2x5090 GPUs
+torchrun --nproc_per_node=2 train_gpt2.py
+```
+The script will periodically report training loss and HellaSwag validation accuracy. Model checkpoints will be saved in the `log/` directory.
 
-This repository is organized into two main Jupyter notebooks:
+### 4. 4. Generating Text (Inference)
+To interact with your trained model, use the `play.ipynb` Jupyter notebook. It provides a simple interface to load a checkpoint and generate text samples.
 
-### 1. `BigramLanguageModel.ipynb`
 
-This notebook serves as the starting point and implements a simple Bigram language model. It's a character-level model that predicts the next character based only on the immediately preceding character. This helps to establish a baseline and understand the fundamental concepts of language modeling and tokenization.
 
-### 2. `GPT_Language_Model.ipynb`
 
-This is the core of the project. This notebook builds a full decoder-only transformer model, similar in architecture to GPT-2. It implements all the key components from scratch, including:
 
--   **Token and Positional Embeddings**
--   **Self-Attention and Multi-Head Attention**
--   **Causal Masking** (to prevent the model from looking ahead)
--   **Transformer Blocks** (with residual connections and layer normalization)
--   **Feed-Forward Networks**
-
-The notebook walks through the training process and demonstrates how to generate new text from the trained model.
-
-## What I Learned
-
--   A practical understanding of the self-attention mechanism, the core of the transformer architecture.
--   The importance of positional encodings for sequence data.
--   The role of residual connections and layer normalization in training deep neural networks.
--   The process of autoregressive text generation.
--   How a complex model like GPT can be broken down into understandable and implementable parts.
-
-## Acknowledgments
-
-A huge thank you to **Andrej Karpathy** for his excellent "Neural Networks: Zero to Hero" series, which made this project possible.
-
--   **[Link to the YouTube video: "Let's build GPT: from scratch, in code, spelled out."](https://www.youtube.com/watch?v=kCc8FmEb1nY)**
 
