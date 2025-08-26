@@ -47,7 +47,7 @@ python fineweb.py
 ### 3. Training the Model
 The `train_gpt2.py` script is the main entry point for training. To launch a distributed training job using FSDP on 2 GPUs, use `torchrun`:
 ```bash
-# Launch training on 2x5090 GPUs
+# Launch training on  2x NVIDIA 5090s GPUs
 torchrun --nproc_per_node=2 train_gpt2.py
 ```
 The script will periodically report training loss and HellaSwag validation accuracy. Model checkpoints will be saved in the `log/` directory.
