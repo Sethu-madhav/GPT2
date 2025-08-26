@@ -52,7 +52,7 @@ torchrun --nproc_per_node=2 train_gpt2.py
 ```
 The script will periodically report training loss and HellaSwag validation accuracy. Model checkpoints will be saved in the `log/` directory.
 
-### 4. 4. Generating Text (Inference)
+### 4. Generating Text (Inference)
 To interact with your trained model, use the `play.ipynb` Jupyter notebook. It provides a simple interface to load a checkpoint and generate text samples.
 
 
