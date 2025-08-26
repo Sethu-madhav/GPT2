@@ -26,8 +26,8 @@ This project uses `uv` for environment and dependency management.
 
 ```bash
 # Clone the repository
-git clone [https://github.com/](https://github.com/)[your-username]/[your-repo-name].git
-cd [your-repo-name]
+git clone https://github.com/Sethu-madhav/GPT2.git
+cd GPT2
 
 # Create a virtual environment and install dependencies with uv
 uv venv
